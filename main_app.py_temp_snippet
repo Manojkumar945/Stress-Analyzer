@@ -1,0 +1,144 @@
+@app.route("/api/send_alert", methods=['POST'])
+def send_alert():
+    """Manually send alert using provided credentials with current status"""
+    data = request.json
+    sender_email = data.get("sender_email")
+    sender_password = data.get("sender_password")
+    
+    # If credentials are provided, use them. Otherwise fall back to env vars (legacy behavior)
+    use_custom_creds = bool(sender_email and sender_password)
+    
+    # Recipient: Send to self (sender_email) if custom creds used, or logged-in user
+    recipient_email = sender_email if use_custom_creds else session.get('caretaker_email', CARETAKER_EMAIL)
+    recipient_name = session.get('caretaker_name', 'Caretaker')
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Get current status
+    prediction = latest_prediction
+    features = current_features
+    
+    # Determine color based on prediction
+    alert_color = "#ff0000" if prediction.lower() == "anxiety" else "#ff6600" if prediction.lower() == "stress" else "#28a745"
+    
+    # Construct HTML Body
+    email_body = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+    body {{ font-family: Arial, sans-serif; color: #333; line-height: 1.6; }}
+    .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+    .header {{ display: flex; align-items: center; margin-bottom: 20px; }}
+    .warning-icon {{ font-size: 24px; margin-right: 10px; }}
+    .alert-title {{ color: #dc3545; font-size: 24px; font-weight: bold; margin: 0; }}
+    .card {{ background-color: #f8f9fa; border-radius: 5px; padding: 20px; margin-bottom: 20px; }}
+    .patient-info {{ margin-bottom: 15px; }}
+    .patient-name {{ font-weight: bold; font-size: 18px; }}
+    .stress-level {{ color: {alert_color}; font-weight: bold; }}
+    .timestamp {{ color: #666; font-size: 14px; }}
+    .table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
+    .table th, .table td {{ padding: 12px; text-align: left; border-bottom: 1px solid #dee2e6; }}
+    .table th {{ background-color: #e9ecef; font-weight: bold; }}
+    .therapy-section {{ background-color: #e3f2fd; border-radius: 5px; padding: 20px; border-left: 5px solid #2196f3; }}
+    .therapy-title {{ color: #0d47a1; font-weight: bold; margin-bottom: 10px; display: flex; align-items: center; }}
+    .music-icon {{ margin-right: 10px; }}
+    .song-link {{ color: #2196f3; text-decoration: none; }}
+</style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <span class="warning-icon">⚠️</span>
+            <h1 class="alert-title">Stress Level Alert</h1>
+        </div>
+        
+        <p>Dear {recipient_name},</p>
+        
+        <div class="card">
+            <div class="patient-info">
+                <div class="patient-name">Patient: {session.get('current_patient_name', 'Unknown')}</div>
+                <div>Detected Stress Level: <span class="stress-level">{prediction.upper()}</span></div>
+                <div class="timestamp">Time: {timestamp}</div>
+            </div>
+        </div>
+        
+        <h3>Vital Signs Summary:</h3>
+        <table class="table">
+            <tr>
+                <th>Parameter</th>
+                <th>Value</th>
+            </tr>
+            <tr>
+                <td>Heart Rate</td>
+                <td>{features.get('heart_rate', 0):.1f} bpm</td>
+            </tr>
+            <tr>
+                <td>Mean EEG Value</td>
+                <td>{features.get('mean_val', 0):.2f}</td>
+            </tr>
+            <tr>
+                <td>Standard Deviation</td>
+                <td>{features.get('std_val', 0):.2f}</td>
+            </tr>
+             <tr>
+                <td>Peak Amplitude</td>
+                <td>{features.get('peak_amp', 0):.2f}</td>
+            </tr>
+             <tr>
+                <td>Entropy</td>
+                <td>{features.get('entropy', 0):.2f}</td>
+            </tr>
+        </table>
+        
+        <div class="therapy-section">
+            <div class="therapy-title">
+                <span class="music-icon">🎵</span> Relaxation Music Activated
+            </div>
+            <p>A calming song has been automatically played for the patient:</p>
+            <p><a href="#" class="song-link">Click here to view the song</a></p>
+        </div>
+        
+        <p style="margin-top: 20px; font-size: 12px; color: #999;">
+            This is an automated alert from the Brainwave Monitoring System.
+        </p>
+    </div>
+</body>
+</html>
+"""
+
+    try:
+        # Use provided credentials or default
+        smtp_user = sender_email if use_custom_creds else EMAIL_ADDRESS
+        smtp_pass = sender_password if use_custom_creds else EMAIL_PASSWORD
+        
+        if not smtp_user or not smtp_pass:
+             return jsonify({"status": "error", "message": "Email credentials not provided and no default configured."}), 400
+
+        msg = MIMEMultipart()
+        msg['From'] = smtp_user
+        msg['To'] = recipient_email
+        msg['Subject'] = f"Stress Level Alert - {prediction.upper()} Detected"
+        msg.attach(MIMEText(email_body, 'html'))
+        
+        # Connect and send
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        text = msg.as_string()
+        server.sendmail(smtp_user, recipient_email, text)
+        server.quit()
+        
+        print(f"✅ Manual alert sent successfully to {recipient_email}")
+        return jsonify({
+            "status": "success", 
+            "message": f"Alert sent to {recipient_email}",
+            "email_count": 1,
+            "sms_count": 0
+        })
+        
+    except smtplib.SMTPAuthenticationError:
+        return jsonify({"status": "error", "message": "Authentication failed. Please check your Email and App Password."}), 401
+    except Exception as e:
+        print(f"❌ Email send error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
